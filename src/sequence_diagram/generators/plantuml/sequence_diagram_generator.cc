@@ -453,10 +453,26 @@ void generator::generate_activity(
             ostr << "end\n";
         }
         else if (m.type() == message_t::kSwitch) {
+            ss << "switch(";
+            const auto &text = m.condition_text();
+            if (text.has_value()) {
+                ss << text.value();
+            }
+
+            ss << ')';
+            std::string id = ss.str();
             if (current_calls_.back().count(tombstone) > 0) {
+                skip_stack.push(id);
                 continue;
             }
 
+            if (current_calls_.back().count(id) > 0) {
+                LOG_DBG("Skipping duplicate switch {}", id);
+                current_calls_.back().emplace(tombstone);
+                continue;
+            }
+
+            current_calls_.back().emplace(id);
             current_calls_.emplace_back();
             print_debug(m, ostr);
             generate_message_comment(ostr, m);
@@ -471,7 +487,13 @@ void generator::generate_activity(
             ostr << "else " << m.message_name() << '\n';
         }
         else if (m.type() == message_t::kSwitchEnd) {
+            if (!skip_stack.empty()) {
+                skip_stack.pop();
+                continue;
+            }
+
             if (current_calls_.back().count(tombstone) > 0) {
+                current_calls_.back().erase(tombstone);
                 continue;
             }
 
