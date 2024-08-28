@@ -2,8 +2,11 @@ type: sequence
 title: PlantUML sequence diagram generator sequence diagram
 combine_free_functions_into_file_participants: true
 generate_method_arguments: none
-generate_condition_statements: true
+#generate_condition_statements: true
 generate_message_comments: true
+generate_condition_statements: false
+inline_lambda_messages: true
+combine_free_functions_into_file_participants: true
 glob:
   - src/common/generators/generators.cc
 using_namespace:

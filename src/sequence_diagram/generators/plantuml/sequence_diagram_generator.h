@@ -29,6 +29,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <unordered_set>
 
 namespace clanguml {
 namespace sequence_diagram {
@@ -69,7 +70,7 @@ public:
      * @param m Message model
      * @param ostr Output stream
      */
-    void generate_call(const clanguml::sequence_diagram::model::message &m,
+    bool generate_call(const clanguml::sequence_diagram::model::message &m,
         std::ostream &ostr) const;
 
     /**
@@ -160,6 +161,7 @@ private:
     mutable std::set<eid_t> generated_participants_;
     mutable std::set<unsigned int> generated_comment_ids_;
     mutable std::vector<model::message> already_generated_in_static_context_;
+    mutable std::vector<std::unordered_set<std::string>> current_calls_;
 };
 
 } // namespace plantuml

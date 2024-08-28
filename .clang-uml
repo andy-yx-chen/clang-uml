@@ -1,4 +1,4 @@
-compilation_database_dir: debug
+compilation_database_dir: release
 output_directory: docs/diagrams
 comment_parser: clang
 add_compile_flags:

@@ -44,18 +44,21 @@ std::string generator::render_name(std::string name) const
     return name;
 }
 
-void generator::generate_call(const message &m, std::ostream &ostr) const
+bool generator::generate_call(const message &m, std::ostream &ostr) const
 {
+    const auto &source_loc =
+        dynamic_cast<const common::model::source_location &>(m);
+    std::stringstream ss;
+    ss << source_loc.file() << ":" << source_loc.line() << "."
+       << source_loc.column();
+    ss << "@" << m.name();
     const auto &from = model().get_participant<model::participant>(m.from());
     const auto &to = model().get_participant<model::participant>(m.to());
 
     if (!from || !to) {
         LOG_DBG("Skipping empty call from '{}' to '{}'", m.from(), m.to());
-        return;
+        return false;
     }
-
-    generate_participant(ostr, m.from());
-    generate_participant(ostr, m.to());
 
     std::string message;
 
@@ -91,6 +94,17 @@ void generator::generate_call(const message &m, std::ostream &ostr) const
 
     message = config().simplify_template_type(message);
 
+    ss << "@" << message;
+    std::string id = ss.str();
+    if (current_calls_.back().count(id) > 0) {
+        return false;
+    }
+
+    current_calls_.back().emplace(id);
+
+    generate_participant(ostr, m.from());
+    generate_participant(ostr, m.to());
+
     const std::string from_alias = generate_alias(from.value());
     const std::string to_alias = generate_alias(to.value());
 
@@ -122,6 +136,8 @@ void generator::generate_call(const message &m, std::ostream &ostr) const
     LOG_DBG("Generated call '{}' from {} [{}] to {} [{}]", message,
         from.value().full_name(false), m.from(), to.value().full_name(false),
         m.to());
+
+    return true;
 }
 
 void generator::generate_return(const message &m, std::ostream &ostr) const
@@ -154,6 +170,9 @@ void generator::generate_return(const message &m, std::ostream &ostr) const
 void generator::generate_activity(
     const activity &a, std::ostream &ostr, std::vector<eid_t> &visited) const
 {
+    std::stack<std::string> skip_stack{};
+    const char *tombstone = "$TOMBSTONE$";
+    current_calls_.emplace_back();
     for (const auto &m : a.messages()) {
         if (m.in_static_declaration_context()) {
             if (util::contains(already_generated_in_static_context_, m))
@@ -162,7 +181,17 @@ void generator::generate_activity(
             already_generated_in_static_context_.push_back(m);
         }
 
+        std::stringstream ss;
+        const auto &source_loc =
+            dynamic_cast<const common::model::source_location &>(m);
+        ss << source_loc.file() << ':' << source_loc.line() << '.'
+           << source_loc.column() << '@';
+
         if (m.type() == message_t::kCall) {
+            if (current_calls_.back().count(tombstone) > 0) {
+                continue;
+            }
+
             const auto &to =
                 model().get_participant<model::participant>(m.to());
 
@@ -170,41 +199,71 @@ void generator::generate_activity(
 
             LOG_DBG("Generating message [{}] --> [{}]", m.from(), m.to());
 
-            generate_call(m, ostr);
+            if (generate_call(m, ostr)) {
 
-            std::string to_alias = generate_alias(to.value());
+                std::string to_alias = generate_alias(to.value());
 
-            ostr << "activate " << to_alias << '\n';
+                ostr << "activate " << to_alias << '\n';
 
-            if (model().sequences().find(m.to()) != model().sequences().end()) {
-                if (std::find(visited.begin(), visited.end(), m.to()) ==
-                    visited
-                        .end()) { // break infinite recursion on recursive calls
-                    LOG_DBG("Creating activity {} --> {} - missing sequence {}",
-                        m.from(), m.to(), m.to());
-                    generate_activity(
-                        model().get_activity(m.to()), ostr, visited);
+                if (model().sequences().find(m.to()) !=
+                    model().sequences().end()) {
+                    if (std::find(visited.begin(), visited.end(), m.to()) ==
+                        visited.end()) { // break infinite recursion on
+                                         // recursive calls
+                        LOG_DBG(
+                            "Creating activity {} --> {} - missing sequence {}",
+                            m.from(), m.to(), m.to());
+                        generate_activity(
+                            model().get_activity(m.to()), ostr, visited);
+                    }
                 }
+                else
+                    LOG_DBG("Skipping activity {} --> {} - missing sequence {}",
+                        m.from(), m.to(), m.to());
+
+                generate_return(m, ostr);
+
+                ostr << "deactivate " << to_alias << '\n';
             }
-            else
-                LOG_DBG("Skipping activity {} --> {} - missing sequence {}",
-                    m.from(), m.to(), m.to());
-
-            generate_return(m, ostr);
-
-            ostr << "deactivate " << to_alias << '\n';
 
             visited.pop_back();
         }
         else if (m.type() == message_t::kIf) {
+            ss << "if(";
+            const auto &text = m.condition_text();
+            if (text.has_value()) {
+                ss << text.value();
+            }
+
+            ss << ')';
+            std::string id = ss.str();
+            if (current_calls_.back().count(tombstone) > 0) {
+                skip_stack.push(id);
+                continue;
+            }
+
+            if (current_calls_.back().count(id) > 0) {
+                LOG_DBG("Skipping duplicate if {}", id);
+                current_calls_.back().emplace(tombstone);
+                continue;
+            }
+
+            current_calls_.back().emplace(id);
+            current_calls_.emplace_back();
             print_debug(m, ostr);
             generate_message_comment(ostr, m);
             ostr << "alt";
-            if (const auto &text = m.condition_text(); text.has_value())
+            if (text.has_value())
                 ostr << " " << text.value();
             ostr << '\n';
         }
         else if (m.type() == message_t::kElseIf) {
+            if (current_calls_.back().count(tombstone) > 0) {
+                continue;
+            }
+
+            current_calls_.pop_back();
+            current_calls_.emplace_back();
             print_debug(m, ostr);
             ostr << "else";
             if (const auto &text = m.condition_text(); text.has_value())
@@ -212,86 +271,269 @@ void generator::generate_activity(
             ostr << '\n';
         }
         else if (m.type() == message_t::kElse) {
+            if (current_calls_.back().count(tombstone) > 0) {
+                continue;
+            }
+
+            current_calls_.pop_back();
+            current_calls_.emplace_back();
             print_debug(m, ostr);
             ostr << "else\n";
         }
         else if (m.type() == message_t::kIfEnd) {
+            if (!skip_stack.empty()) {
+                skip_stack.pop();
+                continue;
+            }
+
+            if (current_calls_.back().count(tombstone) > 0) {
+                current_calls_.back().erase(tombstone);
+                continue;
+            }
+
+            current_calls_.pop_back();
             ostr << "end\n";
         }
         else if (m.type() == message_t::kWhile) {
+            ss << "while(";
+            const auto &text = m.condition_text();
+            if (text.has_value()) {
+                ss << text.value();
+            }
+
+            ss << ')';
+            std::string id = ss.str();
+            if (current_calls_.back().count(tombstone) > 0) {
+                skip_stack.push(id);
+                continue;
+            }
+
+            if (current_calls_.back().count(id) > 0) {
+                LOG_DBG("Skipping duplicate while {}", id);
+                current_calls_.back().emplace(tombstone);
+                continue;
+            }
+
+            current_calls_.back().emplace(id);
+            current_calls_.emplace_back();
             print_debug(m, ostr);
             generate_message_comment(ostr, m);
             ostr << "loop";
-            if (const auto &text = m.condition_text(); text.has_value())
+            if (text.has_value())
                 ostr << " " << text.value();
             ostr << '\n';
         }
         else if (m.type() == message_t::kWhileEnd) {
+            if (!skip_stack.empty()) {
+                skip_stack.pop();
+                continue;
+            }
+
+            if (current_calls_.back().count(tombstone) > 0) {
+                current_calls_.back().erase(tombstone);
+                continue;
+            }
+
+            current_calls_.pop_back();
             ostr << "end\n";
         }
         else if (m.type() == message_t::kFor) {
+            ss << "for(";
+            const auto &text = m.condition_text();
+            if (text.has_value()) {
+                ss << text.value();
+            }
+
+            ss << ')';
+            std::string id = ss.str();
+            if (current_calls_.back().count(tombstone) > 0) {
+                skip_stack.push(id);
+                continue;
+            }
+
+            if (current_calls_.back().count(id) > 0) {
+                LOG_DBG("Skipping duplicate for {}", id);
+                current_calls_.back().emplace(tombstone);
+                continue;
+            }
+
+            current_calls_.back().emplace(id);
+            current_calls_.emplace_back();
             print_debug(m, ostr);
             generate_message_comment(ostr, m);
             ostr << "loop";
-            if (const auto &text = m.condition_text(); text.has_value())
+            if (text.has_value())
                 ostr << " " << text.value();
             ostr << '\n';
         }
         else if (m.type() == message_t::kForEnd) {
+            if (!skip_stack.empty()) {
+                skip_stack.pop();
+                continue;
+            }
+
+            if (current_calls_.back().count(tombstone) > 0) {
+                current_calls_.back().erase(tombstone);
+                continue;
+            }
+
+            current_calls_.pop_back();
             ostr << "end\n";
         }
         else if (m.type() == message_t::kDo) {
+            ss << "do(";
+            const auto &text = m.condition_text();
+            if (text.has_value()) {
+                ss << text.value();
+            }
+
+            ss << ')';
+            std::string id = ss.str();
+            if (current_calls_.back().count(tombstone) > 0) {
+                skip_stack.push(id);
+                continue;
+            }
+
+            if (current_calls_.back().count(id) > 0) {
+                LOG_DBG("Skipping duplicate do {}", id);
+                current_calls_.back().emplace(tombstone);
+                continue;
+            }
+
+            current_calls_.back().emplace(id);
+            current_calls_.emplace_back();
             print_debug(m, ostr);
             generate_message_comment(ostr, m);
             ostr << "loop";
-            if (const auto &text = m.condition_text(); text.has_value())
+            if (text.has_value())
                 ostr << " " << text.value();
             ostr << '\n';
         }
         else if (m.type() == message_t::kDoEnd) {
+            if (!skip_stack.empty()) {
+                skip_stack.pop();
+                continue;
+            }
+
+            if (current_calls_.back().count(tombstone) > 0) {
+                current_calls_.back().erase(tombstone);
+                continue;
+            }
+
+            current_calls_.pop_back();
             ostr << "end\n";
         }
         else if (m.type() == message_t::kTry) {
+            if (current_calls_.back().count(tombstone) > 0) {
+                continue;
+            }
+
+            current_calls_.emplace_back();
             print_debug(m, ostr);
             generate_message_comment(ostr, m);
             ostr << "group try\n";
         }
         else if (m.type() == message_t::kCatch) {
+            if (current_calls_.back().count(tombstone) > 0) {
+                continue;
+            }
+
+            current_calls_.pop_back();
+            current_calls_.emplace_back();
             print_debug(m, ostr);
             ostr << "else " << m.message_name() << '\n';
         }
         else if (m.type() == message_t::kTryEnd) {
+            if (current_calls_.back().count(tombstone) > 0) {
+                continue;
+            }
+
+            current_calls_.pop_back();
             print_debug(m, ostr);
             ostr << "end\n";
         }
         else if (m.type() == message_t::kSwitch) {
+            if (current_calls_.back().count(tombstone) > 0) {
+                continue;
+            }
+
+            current_calls_.emplace_back();
             print_debug(m, ostr);
             generate_message_comment(ostr, m);
             ostr << "group switch\n";
         }
         else if (m.type() == message_t::kCase) {
+            if (current_calls_.back().count(tombstone) > 0) {
+                continue;
+            }
+
             print_debug(m, ostr);
             ostr << "else " << m.message_name() << '\n';
         }
         else if (m.type() == message_t::kSwitchEnd) {
+            if (current_calls_.back().count(tombstone) > 0) {
+                continue;
+            }
+
+            current_calls_.pop_back();
             ostr << "end\n";
         }
         else if (m.type() == message_t::kConditional) {
+            ss << "br(";
+            const auto &text = m.condition_text();
+            if (text.has_value()) {
+                ss << text.value();
+            }
+
+            ss << ')';
+            std::string id = ss.str();
+            if (current_calls_.back().count(tombstone) > 0) {
+                skip_stack.push(id);
+                continue;
+            }
+
+            if (current_calls_.back().count(id) > 0) {
+                LOG_DBG("Skipping duplicate br {}", id);
+                current_calls_.back().emplace(tombstone);
+                continue;
+            }
+
+            current_calls_.back().emplace(id);
+            current_calls_.emplace_back();
             print_debug(m, ostr);
             generate_message_comment(ostr, m);
             ostr << "alt";
-            if (const auto &text = m.condition_text(); text.has_value())
+            if (text.has_value())
                 ostr << " " << text.value();
             ostr << '\n';
         }
         else if (m.type() == message_t::kConditionalElse) {
+            if (current_calls_.back().count(tombstone) > 0) {
+                continue;
+            }
+
+            current_calls_.pop_back();
+            current_calls_.emplace_back();
             print_debug(m, ostr);
             ostr << "else\n";
         }
         else if (m.type() == message_t::kConditionalEnd) {
+            if (!skip_stack.empty()) {
+                skip_stack.pop();
+                continue;
+            }
+
+            if (current_calls_.back().count(tombstone) > 0) {
+                current_calls_.back().erase(tombstone);
+                continue;
+            }
+
+            current_calls_.pop_back();
             ostr << "end\n";
         }
     }
+
+    current_calls_.pop_back();
 }
 
 void generator::generate_message_comment(

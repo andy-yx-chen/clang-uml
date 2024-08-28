@@ -37,7 +37,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 if(APPLE)
     if("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm"
             OR "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64")
-        set(HOMEBREW_PREFIX "/opt/homebrew")
+        set(HOMEBREW_PREFIX "/opt/local")
     else()
         set(HOMEBREW_PREFIX "/usr/local")
     endif()
