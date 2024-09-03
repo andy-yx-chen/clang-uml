@@ -20,16 +20,10 @@
 #include "common/generators/plantuml/generator.h"
 #include "config/config.h"
 #include "sequence_diagram/model/diagram.h"
-#include "sequence_diagram/visitor/translation_unit_visitor.h"
-#include "util/util.h"
 
 #include <glob/glob.hpp>
 
-#include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <sstream>
-#include <unordered_set>
 
 namespace clanguml {
 namespace sequence_diagram {
@@ -70,7 +64,7 @@ public:
      * @param m Message model
      * @param ostr Output stream
      */
-    bool generate_call(const clanguml::sequence_diagram::model::message &m,
+    void generate_call(const clanguml::sequence_diagram::model::message &m,
         std::ostream &ostr) const;
 
     /**
@@ -134,6 +128,15 @@ private:
     std::string generate_alias(const model::participant &participant) const;
 
     /**
+     * @brief Generate a readable name based on the config for a participant,
+     * which could be a method or function
+     * @param participant Sequence diagram participant model
+     * @return Readable name for the participant
+     */
+    std::string generate_function_name(
+        const model::participant &participant) const;
+
+    /**
      * @brief Escape the symbols in the name for PlantUML
      *
      * @param name Full participant name
@@ -161,7 +164,6 @@ private:
     mutable std::set<eid_t> generated_participants_;
     mutable std::set<unsigned int> generated_comment_ids_;
     mutable std::vector<model::message> already_generated_in_static_context_;
-    mutable std::vector<std::unordered_set<std::string>> current_calls_;
 };
 
 } // namespace plantuml
